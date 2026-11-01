@@ -1,0 +1,47 @@
+[
+  {
+    "time": "2026-10-26T10:00:00",
+    "event": "failed_login",
+    "event_id": 4625,
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-26T10:01:00",
+    "event": "failed_login",
+    "event_id": 4625,
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-26T10:02:00",
+    "event": "failed_login",
+    "event_id": 4625,
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-26T10:03:00",
+    "event": "failed_login",
+    "event_id": 4625,
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-26T10:04:00",
+    "event": "failed_login",
+    "event_id": 4625,
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  }
+]

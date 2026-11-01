@@ -1,0 +1,5 @@
+> $env:SOC_NUM_GPU = "20"
+> python main.py --file tests/attack_spread_day.json --db spread.db
+Прочитано событий из attack_spread_day.json: 5
+Новых подозрительных событий не найдено.
+Результат сохранён в spread.db

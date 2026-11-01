@@ -1,0 +1,167 @@
+[
+  {
+    "time": "2026-10-25T12:00:01",
+    "event": "failed_login",
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-25T12:00:10",
+    "event": "failed_login",
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-25T12:00:20",
+    "event": "failed_login",
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-25T12:00:30",
+    "event": "failed_login",
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-25T12:00:40",
+    "event": "failed_login",
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-25T12:00:50",
+    "event": "failed_login",
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-25T12:01:05",
+    "event": "success_login",
+    "ip": "192.0.2.10",
+    "user": "admin",
+    "logon_type": "10",
+    "host": "ATTACKER-PC"
+  },
+  {
+    "time": "2026-10-25T12:02:00",
+    "event": "account_locked",
+    "user": "buh",
+    "host": "WS-07"
+  },
+  {
+    "time": "2026-10-25T12:10:00",
+    "event": "failed_login",
+    "ip": "198.51.100.7",
+    "user": "ivanov",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T12:10:30",
+    "event": "failed_login",
+    "ip": "198.51.100.7",
+    "user": "petrov",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T12:11:00",
+    "event": "failed_login",
+    "ip": "198.51.100.7",
+    "user": "sidorova",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T12:11:30",
+    "event": "failed_login",
+    "ip": "198.51.100.7",
+    "user": "buh",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T12:20:00",
+    "event": "failed_login",
+    "ip": "10.0.0.25",
+    "user": "smirnov",
+    "logon_type": "2"
+  },
+  {
+    "time": "2026-10-25T12:20:15",
+    "event": "failed_login",
+    "ip": "10.0.0.25",
+    "user": "smirnov",
+    "logon_type": "2"
+  },
+  {
+    "time": "2026-10-25T12:20:30",
+    "event": "success_login",
+    "ip": "10.0.0.25",
+    "user": "smirnov",
+    "logon_type": "2"
+  },
+  {
+    "time": "2026-10-25T13:00:00",
+    "event": "failed_login",
+    "ip": "203.0.113.50",
+    "user": "guest",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T13:15:00",
+    "event": "failed_login",
+    "ip": "203.0.113.50",
+    "user": "guest",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T13:30:00",
+    "event": "failed_login",
+    "ip": "203.0.113.50",
+    "user": "guest",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T13:45:00",
+    "event": "failed_login",
+    "ip": "203.0.113.50",
+    "user": "guest",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T14:00:00",
+    "event": "failed_login",
+    "ip": "203.0.113.50",
+    "user": "guest",
+    "logon_type": "3"
+  },
+  {
+    "time": "2026-10-25T14:10:00",
+    "event": "user_created",
+    "user": "support_tmp",
+    "subject_user": "admin"
+  },
+  {
+    "time": "2026-10-25T14:10:30",
+    "event": "added_to_group",
+    "member": "support_tmp",
+    "subject_user": "admin",
+    "group": "Administrators"
+  },
+  {
+    "time": "2026-10-25T14:20:00",
+    "event": "log_cleared",
+    "subject_user": "admin",
+    "host": "SRV-01"
+  }
+]
