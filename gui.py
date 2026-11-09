@@ -29,6 +29,8 @@ PRESETS = {
     "Набор 2: те же 5 ошибок за день": BASE / "tests" / "attack_spread_day.json",
     "Набор 3: вход ночью": BASE / "tests" / "off_hours_night.json",
     "Набор 4: тот же вход днём": BASE / "tests" / "off_hours_day.json",
+    "Набор 5: вход с нового IP": BASE / "tests" / "new_ip.json",
+    "Набор 6: вход с обычного IP": BASE / "tests" / "known_ip.json",
 }
 
 SEVERITY_STYLE = {  # фон строки, цвет текста

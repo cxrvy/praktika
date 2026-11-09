@@ -181,5 +181,41 @@
     "user": "petrova",
     "logon_type": "10",
     "host": "HOME-PC"
+  },
+  {
+    "time": "2026-10-26T09:05:12",
+    "event": "success_login",
+    "event_id": 4624,
+    "ip": "10.0.0.31",
+    "user": "kozlov",
+    "logon_type": "10",
+    "host": "WS-12"
+  },
+  {
+    "time": "2026-10-26T11:40:03",
+    "event": "success_login",
+    "event_id": 4624,
+    "ip": "10.0.0.31",
+    "user": "kozlov",
+    "logon_type": "10",
+    "host": "WS-12"
+  },
+  {
+    "time": "2026-10-26T13:20:47",
+    "event": "success_login",
+    "event_id": 4624,
+    "ip": "10.0.0.31",
+    "user": "kozlov",
+    "logon_type": "10",
+    "host": "WS-12"
+  },
+  {
+    "time": "2026-10-26T15:30:20",
+    "event": "success_login",
+    "event_id": 4624,
+    "ip": "203.0.113.77",
+    "user": "kozlov",
+    "logon_type": "10",
+    "host": "UNKNOWN-PC"
   }
 ]

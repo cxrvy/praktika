@@ -1,4 +1,5 @@
-"""Автотесты правил: «5 неудачных входов за 10 минут» и «Вход в нерабочее время».
+"""Автотесты правил: «5 неудачных входов за 10 минут», «Вход в нерабочее время»
+и «Вход с нового IP» (обучение на истории входов).
 
 Запуск из папки проекта:  python -m unittest -v
 """
@@ -12,6 +13,7 @@ sys.path.insert(0, str(HERE.parent))
 
 import rules    # noqa: E402
 import sources  # noqa: E402
+import storage  # noqa: E402
 
 
 def brute_force(events):
@@ -120,6 +122,59 @@ class TestOffHoursBoundary(unittest.TestCase):
             self.assertEqual(len(off_hours([login(night, user="petrova")])), 1)
         finally:
             rules.OFF_HOURS_ALLOWED_USERS = old
+
+
+def new_ip(events, known=None):
+    return [i for i in rules.detect(events, known or {}) if i["rule"] == "new_ip_login"]
+
+
+def day_login(hour, ip, user="orlova"):
+    """Вход по RDP во вторник днём, чтобы не мешало правило нерабочего времени."""
+    data = {"IpAddress": ip, "TargetUserName": user, "LogonType": "10"}
+    return sources.normalize(1, datetime(2026, 10, 27, hour), 4624, data)
+
+
+class TestNewIpDatasets(unittest.TestCase):
+    def test_new_ip_detected(self):
+        """Набор 5: три входа с 10.0.0.31, затем вход с 203.0.113.77 - инцидент MEDIUM."""
+        found = new_ip(sources.read_json(HERE / "new_ip.json"))
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["severity"], "MEDIUM")
+        self.assertEqual(found[0]["ip"], "203.0.113.77")
+        self.assertIn("10.0.0.31", found[0]["description"])
+
+    def test_usual_ip_ignored(self):
+        """Набор 6: четвёртый вход с того же 10.0.0.31 - инцидента нет."""
+        self.assertEqual(new_ip(sources.read_json(HERE / "known_ip.json")), [])
+
+
+class TestNewIpLearning(unittest.TestCase):
+    def test_learning_period_no_alerts(self):
+        # пока известно меньше NEW_IP_MIN_LOGINS входов, программа только учится
+        events = [day_login(9, "10.0.0.31"), day_login(10, "10.0.0.31"), day_login(11, "203.0.113.77")]
+        self.assertEqual(new_ip(events), [])
+
+    def test_repeated_new_ip_is_one_incident(self):
+        usual = [day_login(h, "10.0.0.31") for h in (9, 10, 11)]
+        self.assertEqual(len(new_ip(usual + [day_login(12, "203.0.113.77"), day_login(13, "203.0.113.77")])), 1)
+
+    def test_user_names_case_insensitive(self):
+        known = {"orlova": {"10.0.0.31": 5}}
+        self.assertEqual(new_ip([day_login(9, "10.0.0.31", user="ORLOVA")], known), [])
+
+    def test_knowledge_saved_between_runs(self):
+        db = storage.connect(":memory:")
+        first_run = [day_login(h, "10.0.0.31") for h in (9, 10, 11)]
+        storage.remember_logins(db, first_run)
+        self.assertEqual(storage.load_known_logins(db), {"orlova": {"10.0.0.31": 3}})
+        # повторная проверка тех же событий не раздувает счётчики
+        storage.remember_logins(db, first_run)
+        self.assertEqual(storage.load_known_logins(db), {"orlova": {"10.0.0.31": 3}})
+        # второй запуск: обычный адрес - тихо, новый - инцидент
+        known = storage.load_known_logins(db)
+        self.assertEqual(new_ip([day_login(14, "10.0.0.31")], known), [])
+        self.assertEqual(len(new_ip([day_login(15, "203.0.113.77")], known)), 1)
+        db.close()
 
 
 if __name__ == "__main__":

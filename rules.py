@@ -17,9 +17,12 @@ PRIVILEGED_GROUPS = {"administrators", "администраторы",
 WORK_START_HOUR = 8             # рабочий день: с 08:00 ...
 WORK_END_HOUR = 20              # ... до 20:00 (20:00 уже нерабочее время)
 WORK_DAYS = {0, 1, 2, 3, 4}     # понедельник-пятница (0 - понедельник)
-OFF_HOURS_LOGON_TYPES = {"3": "по сети", "10": "по RDP"}  # удалённые входы
+REMOTE_LOGON_TYPES = {"3": "по сети", "10": "по RDP"}  # удалённые входы
 OFF_HOURS_ALLOWED_USERS = set() # кому можно входить ночью (дежурные, резервное копирование), строчными буквами
 WEEKDAY_NAMES = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
+# Вход с нового IP: программа запоминает, откуда обычно входит каждая учётная запись
+NEW_IP_MIN_LOGINS = 3           # пока известных входов меньше, программа только учится и не тревожит
 
 SEVERITY_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 
@@ -46,6 +49,9 @@ RULE_ABOUT = {
                        "Если пароль украден, злоумышленник часто входит тогда, когда владелец "
                        "учётной записи не работает и никто не заметит сеанс. Бывает и законная "
                        "работа: дежурство, срочная задача, другой часовой пояс.",
+    "new_ip_login": "Вход с нового IP: учётная запись успешно вошла с адреса, с которого раньше "
+                    "никогда не входила. Украденным паролем обычно пользуются с чужого компьютера, "
+                    "но бывает и законная причина: новый ноутбук, работа из дома, смена адреса по DHCP.",
 }
 
 # Фиксированные проверки для аналитика первой линии по каждому правилу.
@@ -112,6 +118,14 @@ PLAYBOOKS = {
         "Проверить действия в сеансе: 4672 (особые привилегии), 4688 (запуск процессов).",
         "Если вход законный (дежурство, резервное копирование), предложить добавить учётную "
         "запись в OFF_HOURS_ALLOWED_USERS, чтобы не было повторных ложных срабатываний.",
+    ],
+    "new_ip_login": [
+        "Связаться с владельцем учётной записи: не входил ли он с нового устройства или из дома.",
+        "Определить новый IP: внутренний узел — найти владельца по DHCP/инвентаризации; "
+        "внешний — выяснить, почему вход доступен из интернета.",
+        "Проверить, были ли с нового IP неудачные попытки 4625 перед входом.",
+        "Проверить, входили ли с нового IP под другими учётными записями.",
+        "Проверить действия в сеансе: 4672 (особые привилегии), 4688 (запуск процессов).",
     ],
 }
 
@@ -213,6 +227,36 @@ def rule_success_after_failures(events):
                     ip=ip, user=s["user"])
 
 
+def is_remote_login(e):
+    """Успешный удалённый вход (по сети или RDP) с известными учётной записью и IP."""
+    return (e["event"] == "success_login" and e["user"] and e["ip"]
+            and str(e["logon_type"]) in REMOTE_LOGON_TYPES)
+
+
+def rule_new_ip(events, known):
+    """Успешный удалённый вход с IP, с которого эта учётная запись ещё не входила.
+
+    known - то, что программа уже изучила: {учётная запись: {IP: число входов}}
+    (storage.load_known_logins). Пока у учётной записи меньше NEW_IP_MIN_LOGINS известных
+    входов, программа только учится. Входы из events тоже изучаются по ходу проверки,
+    поэтому второй вход с того же нового IP уже не считается новым.
+    """
+    learned = {user: dict(ips) for user, ips in known.items()}
+    for e in events:
+        if not is_remote_login(e):
+            continue
+        ips = learned.setdefault(e["user"].lower(), {})
+        total = sum(ips.values())
+        if e["ip"] not in ips and total >= NEW_IP_MIN_LOGINS:
+            usual = ", ".join(sorted(ips, key=ips.get, reverse=True)[:3])
+            yield _incident(
+                "new_ip_login", "Вход с нового IP", "MEDIUM", f"{e['user']}|{e['ip']}", [e],
+                f"Учётная запись {e['user']} впервые вошла {REMOTE_LOGON_TYPES[str(e['logon_type'])]} "
+                f"с IP {e['ip']}. Раньше входила с: {usual} (известно входов: {total}).",
+                ip=e["ip"], user=e["user"])
+        ips[e["ip"]] = ips.get(e["ip"], 0) + 1
+
+
 def is_off_hours(time):
     """Нерабочее время: выходной день или час вне WORK_START_HOUR..WORK_END_HOUR."""
     return time.weekday() not in WORK_DAYS or not WORK_START_HOUR <= time.hour < WORK_END_HOUR
@@ -227,7 +271,7 @@ def rule_off_hours_login(events):
     sessions = defaultdict(list)
     for e in events:
         if (e["event"] == "success_login" and e["user"]
-                and str(e["logon_type"]) in OFF_HOURS_LOGON_TYPES
+                and str(e["logon_type"]) in REMOTE_LOGON_TYPES
                 and e["user"].lower() not in OFF_HOURS_ALLOWED_USERS
                 and is_off_hours(e["time"])):
             night = (e["time"] - timedelta(hours=WORK_START_HOUR)).date()
@@ -235,7 +279,7 @@ def rule_off_hours_login(events):
 
     for (user, ip, _), items in sessions.items():
         first = items[0]
-        how = OFF_HOURS_LOGON_TYPES[str(first["logon_type"])]
+        how = REMOTE_LOGON_TYPES[str(first["logon_type"])]
         when = f"{WEEKDAY_NAMES[first['time'].weekday()]}, {first['time']:%H:%M}"
         more = f" Всего входов за эту ночь: {len(items)}." if len(items) > 1 else ""
         yield _incident(
@@ -278,8 +322,11 @@ RULES = [rule_brute_force, rule_password_spray, rule_success_after_failures, rul
          rule_single_events]
 
 
-def detect(events):
+def detect(events, known=None):
+    """known - изученные входы для правила «Вход с нового IP»; без них это правило не работает."""
     events = sorted(events, key=lambda e: e["time"])
     incidents = [inc for rule in RULES for inc in rule(events)]
+    if known is not None:
+        incidents += rule_new_ip(events, known)
     incidents.sort(key=lambda i: (i["first_seen"], -SEVERITY_ORDER.index(i["severity"])))
     return incidents

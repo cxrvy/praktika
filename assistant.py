@@ -52,6 +52,15 @@ class Assistant:
 
     # ---------- обработка инцидентов ----------
 
+    def check(self, events):
+        """Правила с учётом изученных входов, затем запоминание новых входов.
+
+        Порядок важен: сначала сравнить с тем, что уже известно, и только потом выучить.
+        """
+        known = storage.load_known_logins(self.db)
+        self.handle(rules.detect(events, known))
+        storage.remember_logins(self.db, events)
+
     def handle(self, incidents):
         for inc in incidents:
             if self.stopped():
@@ -84,18 +93,20 @@ class Assistant:
     def summary(self):
         """Итоги работы в виде строк."""
         s = self.stats
+        users, ips = storage.known_logins_stats(self.db)
+        learned = f"Изучено обычных адресов входа: {ips} (учётных записей: {users})."
         if not s["new"] and not s["updated"]:
             lines = ["Новых подозрительных событий не найдено."]
             if s["duplicate"]:
                 lines.append(f"(Уже известных инцидентов: {s['duplicate']} — повторно не сохранены.)")
-            return lines
+            return lines + [learned]
         by_sev = ", ".join(f"{sev}: {s[sev]}" for sev in reversed(rules.SEVERITY_ORDER) if s[sev])
         lines = [f"Итого новых инцидентов: {s['new']} ({by_sev or '—'}); обновлено: {s['updated']}; "
                  f"повторов пропущено: {s['duplicate']}"]
         if s["ai_ok"] or s["ai_rejected"]:
             lines.append(f"AI-пояснений: принято {s['ai_ok']}, отброшено {s['ai_rejected']} "
                          f"(запросов к модели: {s['ai_attempts']})")
-        return lines
+        return lines + [learned]
 
     # ---------- источники ----------
 
@@ -105,7 +116,7 @@ class Assistant:
         def check():
             events = sources.read_json(path)
             self.log("info", f"Прочитано событий из {path.name}: {len(events)}")
-            self.handle(rules.detect(events))
+            self.check(events)
 
         check()
         if not follow:
@@ -139,6 +150,6 @@ class Assistant:
                     newest = max(e["time"] for e in buffer)
                     buffer = [e for e in buffer if newest - e["time"] <= rules.WINDOW * 2]
                 self.log("info", f"Получено событий: {len(events)}")
-                self.handle(rules.detect(buffer if follow else events))
+                self.check(buffer if follow else events)
             if not follow or self.stopped(interval):
                 return

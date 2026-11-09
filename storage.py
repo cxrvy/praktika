@@ -1,7 +1,7 @@
 """Хранение инцидентов в SQLite с защитой от дублей."""
 import sqlite3
 
-from rules import WINDOW
+from rules import WINDOW, is_remote_login
 
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
@@ -34,6 +34,10 @@ def connect(path):
             db.execute(f"ALTER TABLE incidents ADD COLUMN {name} {col_type}")
     db.execute("CREATE INDEX IF NOT EXISTS idx_incidents_rule_entity ON incidents(rule, entity)")
     db.execute("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)")
+    # Изученные входы: откуда обычно входит каждая учётная запись
+    db.execute("""CREATE TABLE IF NOT EXISTS known_logins (
+        username TEXT, ip TEXT, first_seen TEXT, last_seen TEXT, count INTEGER,
+        PRIMARY KEY (username, ip))""")
     db.commit()
     return db
 
@@ -82,6 +86,39 @@ def save_incident(db, inc):
 def set_ai_analysis(db, inc_id, text):
     db.execute("UPDATE incidents SET ai_analysis = ? WHERE id = ?", (text, inc_id))
     db.commit()
+
+
+def load_known_logins(db):
+    """Изученные входы: {учётная запись: {IP: число входов}}."""
+    known = {}
+    for user, ip, count in db.execute("SELECT username, ip, count FROM known_logins"):
+        known.setdefault(user, {})[ip] = count
+    return known
+
+
+def remember_logins(db, events):
+    """Запоминает успешные удалённые входы - так программа узнаёт, откуда обычно входит каждый.
+
+    Вход учитывается, только если он новее последнего запомненного для этой пары
+    «учётная запись + IP», поэтому повторная проверка тех же событий не раздувает счётчики.
+    """
+    for e in sorted(events, key=lambda e: e["time"]):
+        if not is_remote_login(e):
+            continue
+        user, time = e["user"].lower(), e["time"].strftime(TIME_FMT)
+        row = db.execute("SELECT last_seen FROM known_logins WHERE username = ? AND ip = ?",
+                         (user, e["ip"])).fetchone()
+        if row is None:
+            db.execute("INSERT INTO known_logins VALUES (?, ?, ?, ?, 1)", (user, e["ip"], time, time))
+        elif time > row[0]:
+            db.execute("UPDATE known_logins SET last_seen = ?, count = count + 1 "
+                       "WHERE username = ? AND ip = ?", (time, user, e["ip"]))
+    db.commit()
+
+
+def known_logins_stats(db):
+    """(число учётных записей, число адресов) в изученных входах."""
+    return db.execute("SELECT COUNT(DISTINCT username), COUNT(*) FROM known_logins").fetchone()
 
 
 def get_state(db, key, default=None):
