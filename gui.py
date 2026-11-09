@@ -27,6 +27,8 @@ PRESETS = {
     "Все сценарии (events.json)": BASE / "events.json",
     "Набор 1: атака подряд": BASE / "tests" / "attack_burst.json",
     "Набор 2: те же 5 ошибок за день": BASE / "tests" / "attack_spread_day.json",
+    "Набор 3: вход ночью": BASE / "tests" / "off_hours_night.json",
+    "Набор 4: тот же вход днём": BASE / "tests" / "off_hours_day.json",
 }
 
 SEVERITY_STYLE = {  # фон строки, цвет текста

@@ -13,6 +13,14 @@ SPRAY_USERS_THRESHOLD = 3       # разных учётных записей с 
 PRIVILEGED_GROUPS = {"administrators", "администраторы",
                      "remote desktop users", "пользователи удаленного рабочего стола"}
 
+# Вход в нерабочее время
+WORK_START_HOUR = 8             # рабочий день: с 08:00 ...
+WORK_END_HOUR = 20              # ... до 20:00 (20:00 уже нерабочее время)
+WORK_DAYS = {0, 1, 2, 3, 4}     # понедельник-пятница (0 - понедельник)
+OFF_HOURS_LOGON_TYPES = {"3": "по сети", "10": "по RDP"}  # удалённые входы
+OFF_HOURS_ALLOWED_USERS = set() # кому можно входить ночью (дежурные, резервное копирование), строчными буквами
+WEEKDAY_NAMES = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+
 SEVERITY_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 
 # Суть каждого правила простыми словами. Передаётся модели, чтобы она понимала,
@@ -34,6 +42,10 @@ RULE_ABOUT = {
                       "контроль над компьютером и типично для повышения привилегий злоумышленником.",
     "log_cleared": "Очистка журнала Security: удаляет историю событий безопасности. Злоумышленники "
                    "делают это, чтобы скрыть следы. Плановая очистка встречается редко.",
+    "off_hours_login": "Вход в нерабочее время: успешный удалённый вход ночью или в выходной. "
+                       "Если пароль украден, злоумышленник часто входит тогда, когда владелец "
+                       "учётной записи не работает и никто не заметит сеанс. Бывает и законная "
+                       "работа: дежурство, срочная задача, другой часовой пояс.",
 }
 
 # Фиксированные проверки для аналитика первой линии по каждому правилу.
@@ -92,6 +104,14 @@ PLAYBOOKS = {
         "Уточнить у пользователя, очистившего журнал, причину и сверить с регламентом обслуживания.",
         "Проверить другие источники за этот период: журналы System, PowerShell, копии в SIEM.",
         "Проверить входы этого пользователя перед очисткой (4624: IP, тип входа).",
+    ],
+    "off_hours_login": [
+        "Связаться с владельцем учётной записи и подтвердить, входил ли он сам в это время.",
+        "Проверить, входила ли эта учётная запись раньше с этого IP (4624 за последний месяц).",
+        "Проверить, были ли перед входом неудачные попытки 4625 с этого IP.",
+        "Проверить действия в сеансе: 4672 (особые привилегии), 4688 (запуск процессов).",
+        "Если вход законный (дежурство, резервное копирование), предложить добавить учётную "
+        "запись в OFF_HOURS_ALLOWED_USERS, чтобы не было повторных ложных срабатываний.",
     ],
 }
 
@@ -193,6 +213,38 @@ def rule_success_after_failures(events):
                     ip=ip, user=s["user"])
 
 
+def is_off_hours(time):
+    """Нерабочее время: выходной день или час вне WORK_START_HOUR..WORK_END_HOUR."""
+    return time.weekday() not in WORK_DAYS or not WORK_START_HOUR <= time.hour < WORK_END_HOUR
+
+
+def rule_off_hours_login(events):
+    """Успешный удалённый вход ночью или в выходной.
+
+    Все такие входы одной учётной записи с одного IP за одну ночь (или выходной день)
+    объединяются в один инцидент. Ночь относится к дате вечера, с которого она началась.
+    """
+    sessions = defaultdict(list)
+    for e in events:
+        if (e["event"] == "success_login" and e["user"]
+                and str(e["logon_type"]) in OFF_HOURS_LOGON_TYPES
+                and e["user"].lower() not in OFF_HOURS_ALLOWED_USERS
+                and is_off_hours(e["time"])):
+            night = (e["time"] - timedelta(hours=WORK_START_HOUR)).date()
+            sessions[(e["user"], e["ip"], night)].append(e)
+
+    for (user, ip, _), items in sessions.items():
+        first = items[0]
+        how = OFF_HOURS_LOGON_TYPES[str(first["logon_type"])]
+        when = f"{WEEKDAY_NAMES[first['time'].weekday()]}, {first['time']:%H:%M}"
+        more = f" Всего входов за эту ночь: {len(items)}." if len(items) > 1 else ""
+        yield _incident(
+            "off_hours_login", "Вход в нерабочее время", "MEDIUM", f"{user}|{ip or '?'}", items,
+            f"Учётная запись {user} вошла {how} с IP {ip or 'не указан'} в нерабочее время "
+            f"({when}; рабочее время: пн–пт {WORK_START_HOUR:02d}:00–{WORK_END_HOUR:02d}:00).{more}",
+            ip=ip, user=user)
+
+
 def rule_single_events(events):
     """События, важные сами по себе: блокировка, новая учётка, группа, очистка журнала."""
     for e in events:
@@ -222,7 +274,8 @@ def rule_single_events(events):
                             f"Злоумышленники так скрывают следы.", user=e["subject_user"])
 
 
-RULES = [rule_brute_force, rule_password_spray, rule_success_after_failures, rule_single_events]
+RULES = [rule_brute_force, rule_password_spray, rule_success_after_failures, rule_off_hours_login,
+         rule_single_events]
 
 
 def detect(events):
