@@ -87,6 +87,23 @@ class TestOffHoursDatasets(unittest.TestCase):
         self.assertEqual(off_hours(events), [])
 
 
+class TestOffHoursWeekdayAndNight(unittest.TestCase):
+    """Один и тот же вход по RDP: в будний день в 15:00 - норма, в воскресенье или в 02:00 - инцидент."""
+
+    def test_weekday_15_00_no_incident(self):
+        tuesday_15 = datetime(2026, 10, 27, 15, 0)
+        self.assertEqual(off_hours([login(tuesday_15)]), [])
+
+    def test_sunday_or_02_00_incident(self):
+        sunday_15 = datetime(2026, 11, 1, 15, 0)
+        tuesday_02 = datetime(2026, 10, 27, 2, 0)
+        for when in (sunday_15, tuesday_02):
+            with self.subTest(when=f"{rules.WEEKDAY_NAMES[when.weekday()]} {when:%H:%M}"):
+                found = off_hours([login(when)])
+                self.assertEqual(len(found), 1)
+                self.assertEqual(found[0]["severity"], "MEDIUM")
+
+
 class TestOffHoursBoundary(unittest.TestCase):
     tuesday = datetime(2026, 10, 27)
     saturday = datetime(2026, 10, 31)
@@ -148,6 +165,17 @@ class TestNewIpDatasets(unittest.TestCase):
         self.assertEqual(new_ip(sources.read_json(HERE / "known_ip.json")), [])
 
 
+class TestNewIpVsKnownIp(unittest.TestCase):
+    def test_new_ip_vs_known_ip(self):
+        """При одной и той же истории (3 входа с 10.0.0.31): вход с 10.0.0.31 - тихо,
+        вход с 203.0.113.77 - инцидент «Вход с нового IP»."""
+        known = {"orlova": {"10.0.0.31": 3}}
+        self.assertEqual(new_ip([day_login(14, "10.0.0.31")], known), [])
+        found = new_ip([day_login(14, "203.0.113.77")], known)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["ip"], "203.0.113.77")
+
+
 class TestNewIpLearning(unittest.TestCase):
     def test_learning_period_no_alerts(self):
         # пока известно меньше NEW_IP_MIN_LOGINS входов, программа только учится
@@ -174,6 +202,17 @@ class TestNewIpLearning(unittest.TestCase):
         known = storage.load_known_logins(db)
         self.assertEqual(new_ip([day_login(14, "10.0.0.31")], known), [])
         self.assertEqual(len(new_ip([day_login(15, "203.0.113.77")], known)), 1)
+        db.close()
+
+    def test_view_and_forget_learned(self):
+        db = storage.connect(":memory:")
+        storage.remember_logins(db, [day_login(9, "10.0.0.31"), day_login(10, "10.0.0.31", user="kozlov")])
+        self.assertEqual([r[:2] for r in storage.list_known_logins(db)],
+                         [("kozlov", "10.0.0.31"), ("orlova", "10.0.0.31")])
+        self.assertEqual(storage.forget_known_logins(db, "ORLOVA"), 1)   # одна учётная запись
+        self.assertEqual(list(storage.load_known_logins(db)), ["kozlov"])
+        self.assertEqual(storage.forget_known_logins(db), 1)             # все остальные
+        self.assertEqual(storage.load_known_logins(db), {})
         db.close()
 
 

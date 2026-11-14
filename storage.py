@@ -116,6 +116,28 @@ def remember_logins(db, events):
     db.commit()
 
 
+def list_known_logins(db, user=None):
+    """Строки изученных входов (username, ip, first_seen, last_seen, count), по учётной записи и частоте."""
+    query = "SELECT username, ip, first_seen, last_seen, count FROM known_logins"
+    params = ()
+    if user:
+        query, params = query + " WHERE username = ?", (user.lower(),)
+    return db.execute(query + " ORDER BY username, count DESC, ip", params).fetchall()
+
+
+def forget_known_logins(db, user=None):
+    """Забывает изученные входы (все или одной учётной записи). Инциденты не трогает.
+
+    Возвращает, сколько записей удалено.
+    """
+    if user:
+        cur = db.execute("DELETE FROM known_logins WHERE username = ?", (user.lower(),))
+    else:
+        cur = db.execute("DELETE FROM known_logins")
+    db.commit()
+    return cur.rowcount
+
+
 def known_logins_stats(db):
     """(число учётных записей, число адресов) в изученных входах."""
     return db.execute("SELECT COUNT(DISTINCT username), COUNT(*) FROM known_logins").fetchone()
