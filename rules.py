@@ -1,8 +1,8 @@
 """Правила обнаружения. Каждое правило получает список событий и возвращает инциденты.
 
 Инцидент - словарь:
-    rule, title, severity, entity, ip, user, first_seen, last_seen,
-    event_count, description, samples (несколько событий для контекста)
+    rule, title, severity, entity, ip, user, actor (кто действовал), first_seen, last_seen,
+    event_count, description, mitre (коды техник ATT&CK), samples (несколько событий для контекста)
 """
 from collections import defaultdict, deque
 from datetime import timedelta
@@ -24,7 +24,34 @@ WEEKDAY_NAMES = ["понедельник", "вторник", "среда", "че
 # Вход с нового IP: программа запоминает, откуда обычно входит каждая учётная запись
 NEW_IP_MIN_LOGINS = 3           # пока известных входов меньше, программа только учится и не тревожит
 
+# Цепочка атаки: инциденты одной учётной записи, идущие друг за другом с паузами не больше CHAIN_GAP
+CHAIN_GAP = timedelta(hours=3)
+CHAIN_ACCESS = {"success_after_bruteforce", "new_ip_login", "off_hours_login"}  # получение доступа
+CHAIN_ACTIONS = {"user_created", "added_to_group", "log_cleared"}               # действия после входа
+
 SEVERITY_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+
+# Техники MITRE ATT&CK (https://attack.mitre.org) - общий язык SOC для описания атак
+MITRE = {
+    "brute_force": ["T1110.001"],
+    "password_spray": ["T1110.003"],
+    "success_after_bruteforce": ["T1110.001", "T1078"],
+    "account_locked": ["T1110"],
+    "user_created": ["T1136.001"],
+    "added_to_group": ["T1098.007"],
+    "log_cleared": ["T1070.001"],
+    "off_hours_login": ["T1078"],
+    "new_ip_login": ["T1078"],
+}
+MITRE_NAMES = {
+    "T1110": "Brute Force — перебор паролей",
+    "T1110.001": "Password Guessing — подбор пароля",
+    "T1110.003": "Password Spraying — один пароль на много учётных записей",
+    "T1078": "Valid Accounts — вход под настоящей учётной записью",
+    "T1136.001": "Create Account: Local Account — создание локальной учётной записи",
+    "T1098.007": "Additional Local or Domain Groups — добавление в группу",
+    "T1070.001": "Clear Windows Event Logs — очистка журналов Windows",
+}
 
 # Суть каждого правила простыми словами. Передаётся модели, чтобы она понимала,
 # о какой атаке идёт речь, и не придумывала своё толкование.
@@ -52,6 +79,10 @@ RULE_ABOUT = {
     "new_ip_login": "Вход с нового IP: учётная запись успешно вошла с адреса, с которого раньше "
                     "никогда не входила. Украденным паролем обычно пользуются с чужого компьютера, "
                     "но бывает и законная причина: новый ноутбук, работа из дома, смена адреса по DHCP.",
+    "attack_chain": "Цепочка атаки: несколько инцидентов одной учётной записи подряд складываются "
+                    "в типичный сценарий взлома: получение доступа, затем действия внутри системы "
+                    "(создание учётных записей, выдача прав, удаление следов). По отдельности каждый "
+                    "шаг может быть безобидным, вместе они намного опаснее.",
 }
 
 # Фиксированные проверки для аналитика первой линии по каждому правилу.
@@ -127,18 +158,31 @@ PLAYBOOKS = {
         "Проверить, входили ли с нового IP под другими учётными записями.",
         "Проверить действия в сеансе: 4672 (особые привилегии), 4688 (запуск процессов).",
     ],
+    "attack_chain": [
+        "Немедленно эскалировать на вторую линию: это не отдельное событие, а сценарий атаки.",
+        "Разобрать шаги цепочки по порядку: каждый шаг — отдельный инцидент в таблице.",
+        "Связаться с владельцем учётной записи и подтвердить, выполнял ли он эти действия.",
+        "Найти всё, что создано или изменено в цепочке (учётные записи, группы), — "
+        "это возможные «закладки» для повторного входа.",
+        "Отключение учётных записей и смену паролей согласовать с ответственным — "
+        "помощник ничего не блокирует сам.",
+    ],
 }
 
 
-def _incident(rule, title, severity, entity, events, description, ip=None, user=None):
+def _incident(rule, title, severity, entity, events, description, ip=None, user=None, actor=None):
+    """actor - учётная запись, которая действовала (для цепочки атаки). По умолчанию - user;
+    пустая строка - действующего лица нет (например, блокировку выполнила сама Windows)."""
     return {
         "rule": rule,
         "title": title,
         "checks": PLAYBOOKS[rule],
+        "mitre": MITRE[rule],
         "severity": severity,
         "entity": entity,
         "ip": ip,
         "user": user,
+        "actor": user if actor is None else actor,
         "first_seen": events[0]["time"],
         "last_seen": events[-1]["time"],
         "event_count": len(events),
@@ -296,12 +340,13 @@ def rule_single_events(events):
             yield _incident("account_locked", "Учётная запись заблокирована", "MEDIUM",
                             e["user"] or "?", [e],
                             f"Учётная запись {e['user']} заблокирована после неудачных входов "
-                            f"(источник: {e['host'] or 'не указан'}).", user=e["user"])
+                            f"(источник: {e['host'] or 'не указан'}).", user=e["user"], actor="")
         elif e["event"] == "user_created":
             yield _incident("user_created", "Создана учётная запись", "MEDIUM",
                             e["user"] or "?", [e],
                             f"Пользователь {e['subject_user'] or '?'} создал учётную запись "
-                            f"{e['user']}. Проверьте, была ли это плановая операция.", user=e["user"])
+                            f"{e['user']}. Проверьте, была ли это плановая операция.", user=e["user"],
+                            actor=e["subject_user"] or "")
         elif e["event"] == "added_to_group":
             group = e.get("group") or "?"
             privileged = group.lower() in PRIVILEGED_GROUPS
@@ -310,7 +355,7 @@ def rule_single_events(events):
                             f"{e['user'] or '?'}|{group}", [e],
                             f"Пользователь {e['subject_user'] or '?'} добавил {e['user'] or '?'} "
                             f"в группу «{group}»" + (" (привилегированная группа)." if privileged else "."),
-                            user=e["user"])
+                            user=e["user"], actor=e["subject_user"] or "")
         elif e["event"] == "log_cleared":
             yield _incident("log_cleared", "Очищен журнал аудита", "HIGH",
                             e["subject_user"] or e["host"] or "?", [e],
@@ -322,11 +367,70 @@ RULES = [rule_brute_force, rule_password_spray, rule_success_after_failures, rul
          rule_single_events]
 
 
+def _step_detail(inc, actor):
+    """Короткое уточнение к шагу цепочки: над кем действие или откуда вход."""
+    if inc["user"] and inc["user"].lower() != actor:
+        return f" ({inc['user']})"
+    return f" ({inc['ip']})" if inc["ip"] else ""
+
+
+def chain_attacks(incidents):
+    """Связывает инциденты одной учётной записи в цепочку атаки.
+
+    Цепочка - это инциденты, где действовала одна и та же учётная запись, идущие друг
+    за другом с паузами не больше CHAIN_GAP, среди которых есть и получение доступа
+    (CHAIN_ACCESS), и действия после входа (CHAIN_ACTIONS), всего не меньше 3 шагов.
+    Например: подбор пароля → успешный вход → создание учётной записи → очистка журнала.
+    """
+    by_actor = defaultdict(list)
+    for inc in incidents:
+        if inc["actor"] and inc["rule"] != "attack_chain":
+            by_actor[inc["actor"].lower()].append(inc)
+
+    for actor, items in by_actor.items():
+        items.sort(key=lambda i: i["first_seen"])
+        groups = [[items[0]]]
+        for inc in items[1:]:
+            if inc["first_seen"] - max(i["last_seen"] for i in groups[-1]) <= CHAIN_GAP:
+                groups[-1].append(inc)
+            else:
+                groups.append([inc])
+        for steps in groups:
+            rules_in = {s["rule"] for s in steps}
+            if len(steps) < 3 or not rules_in & CHAIN_ACCESS or not rules_in & CHAIN_ACTIONS:
+                continue
+            first, last = steps[0]["first_seen"], max(s["last_seen"] for s in steps)
+            minutes = int((last - first).total_seconds() // 60)
+            # для «входа после подбора» важно время самого входа, а не начала подбора
+            path = " → ".join(
+                f"{n}) {s['last_seen' if s['rule'] == 'success_after_bruteforce' else 'first_seen']:%H:%M} "
+                f"{s['title']}{_step_detail(s, actor)}" for n, s in enumerate(steps, start=1))
+            name = steps[0]["actor"]
+            yield {
+                "rule": "attack_chain",
+                "title": "Цепочка атаки",
+                "checks": PLAYBOOKS["attack_chain"],
+                "mitre": list(dict.fromkeys(code for s in steps for code in s["mitre"])),
+                "severity": "CRITICAL",
+                "entity": name,
+                "ip": next((s["ip"] for s in steps if s["ip"]), None),
+                "user": name,
+                "actor": name,
+                "first_seen": first,
+                "last_seen": last,
+                "event_count": len(steps),  # для цепочки - число шагов (события шагов пересекаются)
+                "description": f"Связанные инциденты учётной записи {name} за {minutes // 60} ч "
+                               f"{minutes % 60} мин, шагов: {len(steps)}: {path}.",
+                "samples": [s["samples"][-1] for s in steps],
+            }
+
+
 def detect(events, known=None):
     """known - изученные входы для правила «Вход с нового IP»; без них это правило не работает."""
     events = sorted(events, key=lambda e: e["time"])
     incidents = [inc for rule in RULES for inc in rule(events)]
     if known is not None:
         incidents += rule_new_ip(events, known)
+    incidents += chain_attacks(incidents)
     incidents.sort(key=lambda i: (i["first_seen"], -SEVERITY_ORDER.index(i["severity"])))
     return incidents

@@ -1,5 +1,6 @@
 """Хранение инцидентов в SQLite с защитой от дублей."""
 import sqlite3
+from datetime import datetime
 
 from rules import WINDOW, is_remote_login
 
@@ -16,7 +17,12 @@ NEW_COLUMNS = {
     "description": "TEXT",
     "checks": "TEXT",
     "updated_at": "TEXT",
+    "mitre": "TEXT",        # коды техник MITRE ATT&CK через запятую
+    "verdict": "TEXT",      # отметка аналитика: confirmed / false_positive / NULL - не разобран
+    "verdict_at": "TEXT",
 }
+
+VERDICTS = {"confirmed": "Подтверждено", "false_positive": "Ложное срабатывание"}
 
 
 def format_checks(checks):
@@ -75,10 +81,11 @@ def save_incident(db, inc):
 
     cur = db.execute(
         """INSERT INTO incidents (rule, title, severity, entity, ip, username, first_seen,
-               last_seen, event_count, description, checks)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               last_seen, event_count, description, checks, mitre)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (inc["rule"], inc["title"], inc["severity"], inc["entity"], inc["ip"], inc["user"],
-         first, last, inc["event_count"], inc["description"], format_checks(inc["checks"])))
+         first, last, inc["event_count"], inc["description"], format_checks(inc["checks"]),
+         ", ".join(inc["mitre"])))
     db.commit()
     return cur.lastrowid, "new"
 
@@ -86,6 +93,61 @@ def save_incident(db, inc):
 def set_ai_analysis(db, inc_id, text):
     db.execute("UPDATE incidents SET ai_analysis = ? WHERE id = ?", (text, inc_id))
     db.commit()
+
+
+def set_verdict(db, inc_id, verdict):
+    """Отметка аналитика: "confirmed", "false_positive" или None (снять отметку)."""
+    if verdict is not None and verdict not in VERDICTS:
+        raise ValueError(f"Неизвестная отметка: {verdict}")
+    db.execute("UPDATE incidents SET verdict = ?, verdict_at = ? WHERE id = ?",
+               (verdict, None if verdict is None else datetime.now().strftime(TIME_FMT), inc_id))
+    db.commit()
+
+
+def rule_stats(db, start=None, end=None):
+    """Статистика по правилам: сколько инцидентов, сколько подтверждено, сколько ложных.
+
+    start, end - строки TIME_FMT: брать инциденты, начавшиеся в этом промежутке.
+    Возвращает список словарей, самые «шумные» правила (больше ложных) первыми.
+    """
+    where, params = "WHERE rule IS NOT NULL", []
+    if start:
+        where, params = where + " AND first_seen >= ?", params + [start]
+    if end:
+        where, params = where + " AND first_seen <= ?", params + [end]
+    rows = db.execute(f"""
+        SELECT rule, MAX(title), COUNT(*),
+               SUM(verdict = 'confirmed'), SUM(verdict = 'false_positive'), MAX(mitre)
+        FROM incidents {where} GROUP BY rule""", params).fetchall()
+    stats = []
+    for rule, title, total, confirmed, false, mitre in rows:
+        reviewed = (confirmed or 0) + (false or 0)
+        stats.append({
+            "rule": rule, "title": title, "mitre": mitre or "", "total": total,
+            "confirmed": confirmed or 0, "false_positive": false or 0,
+            "unreviewed": total - reviewed,
+            # доля ложных считается только среди разобранных инцидентов
+            "false_rate": (false or 0) / reviewed if reviewed else None,
+        })
+    stats.sort(key=lambda s: (-(s["false_rate"] or 0), s["false_rate"] is None, -s["total"]))
+    return stats
+
+
+def format_rule_stats(stats):
+    """Статистика по правилам в виде строк текста."""
+    if not stats:
+        return ["Инцидентов пока нет."]
+    lines = []
+    for s in stats:
+        reviewed = s["confirmed"] + s["false_positive"]
+        if reviewed:
+            verdict = (f"ложных {s['false_positive']} из {reviewed} разобранных "
+                       f"({s['false_rate']:.0%}), подтверждено {s['confirmed']}")
+        else:
+            verdict = "ещё не разобраны"
+        tail = f", не разобрано {s['unreviewed']}" if reviewed and s["unreviewed"] else ""
+        lines.append(f"{s['title']}: инцидентов {s['total']} — {verdict}{tail}")
+    return lines
 
 
 def load_known_logins(db):

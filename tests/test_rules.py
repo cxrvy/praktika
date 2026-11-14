@@ -1,5 +1,5 @@
-"""Автотесты правил: «5 неудачных входов за 10 минут», «Вход в нерабочее время»
-и «Вход с нового IP» (обучение на истории входов).
+"""Автотесты: правила «5 неудачных входов за 10 минут», «Вход в нерабочее время»,
+«Вход с нового IP» (обучение), цепочка атаки, MITRE, отметки аналитика и отчёт.
 
 Запуск из папки проекта:  python -m unittest -v
 """
@@ -213,6 +213,105 @@ class TestNewIpLearning(unittest.TestCase):
         self.assertEqual(list(storage.load_known_logins(db)), ["kozlov"])
         self.assertEqual(storage.forget_known_logins(db), 1)             # все остальные
         self.assertEqual(storage.load_known_logins(db), {})
+        db.close()
+
+
+def scenario_db():
+    """База в памяти с инцидентами из events.json."""
+    db = storage.connect(":memory:")
+    for inc in rules.detect(sources.read_json(HERE.parent / "events.json"), {}):
+        storage.save_incident(db, inc)
+    return db
+
+
+def admin_events(action_delay):
+    """Подбор пароля к admin, успешный вход, затем admin создаёт support_tmp и очищает журнал."""
+    start = datetime(2026, 10, 27, 12, 0)
+    attack = {"IpAddress": "192.0.2.10", "TargetUserName": "admin", "LogonType": "10"}
+    events = [sources.normalize(n, start + timedelta(seconds=10 * n), 4625, attack) for n in range(5)]
+    events.append(sources.normalize(6, start + timedelta(minutes=1), 4624, attack))
+    later = start + timedelta(minutes=1) + action_delay
+    events.append(sources.normalize(7, later, 4720, {"TargetUserName": "support_tmp", "SubjectUserName": "admin"}))
+    events.append(sources.normalize(8, later + timedelta(minutes=5), 1102, {"SubjectUserName": "admin"}))
+    return events
+
+
+def chains(events):
+    return [i for i in rules.detect(events) if i["rule"] == "attack_chain"]
+
+
+class TestMitre(unittest.TestCase):
+    def test_every_rule_has_known_technique(self):
+        for rule in rules.PLAYBOOKS:
+            if rule == "attack_chain":
+                continue  # коды цепочки собираются из её шагов
+            with self.subTest(rule=rule):
+                self.assertTrue(rules.MITRE[rule])
+                for code in rules.MITRE[rule]:
+                    self.assertIn(code, rules.MITRE_NAMES)
+
+    def test_mitre_saved_with_incident(self):
+        db = scenario_db()
+        row = db.execute("SELECT mitre FROM incidents WHERE rule = 'brute_force'").fetchone()
+        self.assertEqual(row[0], "T1110.001")
+        db.close()
+
+
+class TestAttackChain(unittest.TestCase):
+    def test_chain_in_scenarios(self):
+        """events.json: подбор → вход → создание учётной записи → добавление в группу → очистка журнала."""
+        found = chains(sources.read_json(HERE.parent / "events.json"))
+        self.assertEqual(len(found), 1)
+        chain = found[0]
+        self.assertEqual((chain["severity"], chain["entity"], chain["event_count"]), ("CRITICAL", "admin", 5))
+        self.assertEqual(chain["mitre"], ["T1110.001", "T1078", "T1136.001", "T1098.007", "T1070.001"])
+        self.assertIn("12:01 Успешный вход после подбора пароля", chain["description"])
+
+    def test_actions_soon_after_access_are_chained(self):
+        self.assertEqual(len(chains(admin_events(timedelta(hours=2)))), 1)
+
+    def test_actions_much_later_are_not_chained(self):
+        # пауза больше CHAIN_GAP (3 ч) - это уже не одна история
+        self.assertEqual(chains(admin_events(timedelta(hours=4))), [])
+
+    def test_logins_without_actions_are_not_a_chain(self):
+        events = sources.read_json(HERE / "off_hours_night.json")
+        self.assertEqual(chains(events), [])
+
+
+class TestVerdicts(unittest.TestCase):
+    def test_false_positive_statistics(self):
+        db = scenario_db()
+        ids = dict(db.execute("SELECT rule, id FROM incidents"))
+        storage.set_verdict(db, ids["off_hours_login"], "false_positive")
+        storage.set_verdict(db, ids["brute_force"], "confirmed")
+        stats = {s["rule"]: s for s in storage.rule_stats(db)}
+        self.assertEqual(stats["off_hours_login"]["false_rate"], 1.0)
+        self.assertEqual(stats["brute_force"]["false_rate"], 0.0)
+        self.assertIsNone(stats["log_cleared"]["false_rate"])            # ещё не разобран
+        self.assertEqual(storage.rule_stats(db)[0]["rule"], "off_hours_login")  # самое «шумное» первым
+        storage.set_verdict(db, ids["off_hours_login"], None)              # снять отметку
+        self.assertEqual({s["rule"]: s for s in storage.rule_stats(db)}["off_hours_login"]["unreviewed"], 1)
+        with self.assertRaises(ValueError):
+            storage.set_verdict(db, ids["brute_force"], "maybe")
+        db.close()
+
+
+class TestReport(unittest.TestCase):
+    def test_weekly_report(self):
+        import report
+        db = scenario_db()
+        html, start, end = report.build(db, days=7)
+        self.assertEqual((str(start), str(end)), ("2026-10-21", "2026-10-27"))  # неделя до последнего инцидента
+        for text in ("Всего инцидентов", "Цепочка атаки", "T1110.001", "192.0.2.10", "Инцидентов по дням"):
+            self.assertIn(text, html)
+        db.close()
+
+    def test_empty_database(self):
+        import report
+        db = storage.connect(":memory:")
+        html, _, _ = report.build(db)
+        self.assertIn("Инцидентов за период нет", html)
         db.close()
 
 

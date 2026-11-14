@@ -9,12 +9,16 @@
     python main.py --no-ai                  # без обращения к Ollama
     python main.py --learned                # показать выученные адреса входа
     python main.py --forget-learned         # забыть все выученные адреса (инциденты остаются)
+    python main.py --mark 5 false           # отметить инцидент №5 как ложное срабатывание
+    python main.py --stats                  # статистика правил: сколько ложных
+    python main.py --report                 # HTML-отчёт за неделю в папку reports
 """
 import argparse
 import sys
 from pathlib import Path
 
 import ai
+import report
 import rules
 import storage
 from assistant import Assistant
@@ -34,6 +38,16 @@ def parse_args():
     p.add_argument("--interval", type=int, default=15, help="пауза между проверками, сек")
     p.add_argument("--no-ai", action="store_true", help="не обращаться к Ollama")
     learned = p.add_mutually_exclusive_group()
+    learned.add_argument("--mark", nargs=2, metavar=("НОМЕР", "ОТМЕТКА"),
+                         help="отметить инцидент: confirmed (подтверждено), false (ложное) "
+                              "или clear (снять отметку), и выйти")
+    learned.add_argument("--stats", action="store_true",
+                         help="статистика правил: сколько инцидентов подтверждено и сколько ложных")
+    learned.add_argument("--report", nargs="?", const="", metavar="ФАЙЛ",
+                         help="сохранить HTML-отчёт (по умолчанию в папку reports) и выйти")
+    p.add_argument("--days", type=int, default=7,
+                   help="за сколько дней отчёт (0 - за всё время); неделя заканчивается "
+                        "днём последнего инцидента")
     learned.add_argument("--learned", nargs="?", const="", metavar="УЧЁТНАЯ_ЗАПИСЬ",
                          help="показать выученные адреса входа (всех или одной учётной записи) и выйти")
     learned.add_argument("--forget-learned", nargs="?", const="", metavar="УЧЁТНАЯ_ЗАПИСЬ",
@@ -54,6 +68,23 @@ def show_learned(db, user):
     print(f"Всего адресов: {len(rows)}, учётных записей: {len({r[0] for r in rows})}.")
     print(f"Порог обучения NEW_IP_MIN_LOGINS = {rules.NEW_IP_MIN_LOGINS}: пока у учётной записи "
           "меньше известных входов, правило «Вход с нового IP» для неё молчит.")
+
+
+MARKS = {"confirmed": "confirmed", "false": "false_positive", "clear": None}
+
+
+def mark(db, number, value):
+    if value not in MARKS or not number.isdigit():
+        print("[ОШИБКА] Пример: --mark 5 false. Отметки: confirmed, false, clear.")
+        return 1
+    row = db.execute("SELECT title FROM incidents WHERE id = ?", (int(number),)).fetchone()
+    if not row:
+        print(f"[ОШИБКА] Инцидента №{number} нет в базе.")
+        return 1
+    storage.set_verdict(db, int(number), MARKS[value])
+    label = storage.VERDICTS.get(MARKS[value], "без отметки")
+    print(f"Инцидент №{number} «{row[0]}»: {label}.")
+    return 0
 
 
 def forget_learned(db, user):
@@ -90,6 +121,19 @@ def print_event(kind, data):
 def main():
     sys.stdout.reconfigure(errors="replace")
     args = parse_args()
+    if args.mark or args.stats or args.report is not None:
+        db = storage.connect(args.db)
+        try:
+            if args.mark:
+                return mark(db, *args.mark)
+            if args.stats:
+                print("\n".join(storage.format_rule_stats(storage.rule_stats(db))))
+            else:
+                path = report.save(db, args.report or None, days=args.days or None)
+                print(f"Отчёт сохранён: {path}")
+            return 0
+        finally:
+            db.close()
     if args.learned is not None or args.forget_learned is not None:
         db = storage.connect(args.db)
         if args.learned is not None:

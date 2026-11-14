@@ -12,11 +12,13 @@ import queue
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import ai
+import report
 import rules
 import storage
 from assistant import Assistant
@@ -41,10 +43,11 @@ SEVERITY_STYLE = {  # фон строки, цвет текста
 }
 LOG_COLORS = {"info": "#333333", "warning": "#b35c00", "error": "#c62828", "ok": "#2e7d32"}
 COLUMNS = [  # (ключ, заголовок, ширина)
-    ("id", "№", 40), ("severity", "Риск", 80), ("title", "Инцидент", 180), ("entity", "Объект", 115),
-    ("first_seen", "Начало", 135), ("last_seen", "Конец", 70), ("event_count", "Событий", 65),
-    ("ai", "AI", 75),
+    ("id", "№", 40), ("severity", "Риск", 72), ("title", "Инцидент", 165), ("entity", "Объект", 110),
+    ("first_seen", "Начало", 130), ("last_seen", "Конец", 65), ("event_count", "Событий", 68),
+    ("ai", "AI", 55), ("verdict", "Отметка", 85),
 ]
+VERDICT_CELLS = {"confirmed": "✔ подтв.", "false_positive": "✖ ложное", None: "—"}
 SHOWN_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM"]  # уровни, которые выдают правила
 
 
@@ -181,10 +184,12 @@ class App(tk.Tk):
         filters = ttk.Frame(left)
         filters.pack(fill="x", pady=(0, 4))
         ttk.Label(filters, text="Инциденты", style="Header.TLabel").pack(side="left")
-        ttk.Button(filters, text="Экспорт в CSV", command=self.export_csv).pack(side="right")
+        ttk.Button(filters, text="Отчёт за неделю", command=self.weekly_report).pack(side="right")
+        ttk.Button(filters, text="Статистика", command=self.show_stats).pack(side="right", padx=4)
+        ttk.Button(filters, text="CSV", width=5, command=self.export_csv).pack(side="right")
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.refresh_table())
-        ttk.Entry(filters, textvariable=self.search_var, width=18).pack(side="right", padx=4)
+        ttk.Entry(filters, textvariable=self.search_var, width=14).pack(side="right", padx=(4, 12))
         ttk.Label(filters, text="Поиск:").pack(side="right")
         self.sev_filter = tk.StringVar(value="Все")
         sev_box = ttk.Combobox(filters, textvariable=self.sev_filter, state="readonly", width=10,
@@ -199,7 +204,8 @@ class App(tk.Tk):
                                  selectmode="browse")
         for key, title, width in COLUMNS:
             self.tree.heading(key, text=title)
-            self.tree.column(key, width=width, anchor="center" if key in ("id", "event_count", "ai") else "w",
+            self.tree.column(key, width=width,
+                             anchor="center" if key in ("id", "event_count", "ai", "verdict") else "w",
                              stretch=key == "title")
         for sev, (bg, fg) in SEVERITY_STYLE.items():
             self.tree.tag_configure(sev, background=bg, foreground=fg)
@@ -216,6 +222,17 @@ class App(tk.Tk):
         head.pack(fill="x", pady=(0, 4))
         ttk.Label(head, text="Подробности", style="Header.TLabel").pack(side="left")
         ttk.Button(head, text="Копировать отчёт", command=self.copy_report).pack(side="right")
+        # Отметка аналитика: по ним считается, какие правила дают ложные срабатывания
+        marks = ttk.Frame(right)
+        marks.pack(fill="x", pady=(0, 4))
+        ttk.Label(marks, text="Отметка:").pack(side="left")
+        self.mark_buttons = [
+            ttk.Button(marks, text="✔ Подтверждено", command=lambda: self.set_verdict("confirmed")),
+            ttk.Button(marks, text="✖ Ложное срабатывание", command=lambda: self.set_verdict("false_positive")),
+            ttk.Button(marks, text="Снять", width=6, command=lambda: self.set_verdict(None)),
+        ]
+        for btn in self.mark_buttons:
+            btn.pack(side="left", padx=(4, 0))
         details_box = ttk.Frame(right)
         details_box.pack(fill="both", expand=True)
         self.details = tk.Text(details_box, wrap="word", padx=10, pady=8, relief="solid", borderwidth=1,
@@ -418,7 +435,7 @@ class App(tk.Tk):
     def load_incidents(self, select=None):
         cur = self.db.execute(
             """SELECT id, severity, title, rule, entity, ip, first_seen, last_seen, event_count,
-                      description, checks, ai_analysis, created_at
+                      description, checks, ai_analysis, created_at, mitre, verdict, verdict_at
                FROM incidents ORDER BY id DESC""")
         names = [c[0] for c in cur.description]
         self.rows = {r[0]: dict(zip(names, r)) for r in cur.fetchall()}
@@ -449,7 +466,8 @@ class App(tk.Tk):
             if last[:10] == first[:10]:
                 last = last[11:]  # тот же день - достаточно времени
             self.tree.insert("", "end", iid=str(row["id"]), tags=(sev,), values=(
-                row["id"], sev, title, entity, first, last, row["event_count"], self._ai_cell(row)))
+                row["id"], sev, title, entity, first, last, row["event_count"], self._ai_cell(row),
+                VERDICT_CELLS.get(row["verdict"], row["verdict"])))
         for sev, lbl in self.counter_labels.items():
             lbl.configure(text=f"{sev}: {counts.get(sev, 0)}")
         if selected and self.tree.exists(str(selected)):
@@ -464,6 +482,11 @@ class App(tk.Tk):
             (f" {sev} ", sev),
             (f"   Объект: {row['entity'] or row['ip'] or '—'}   •   событий: {row['event_count']}\n", "muted"),
             (f"Период: {row['first_seen'] or row['created_at'] or '—'} — {row['last_seen'] or '—'}\n", "muted"),
+            (f"Отметка аналитика: {storage.VERDICTS.get(row['verdict'], 'не разобран')}"
+             + (f" ({row['verdict_at']})" if row["verdict_at"] else "") + "\n", "muted"),
+            ("MITRE ATT&CK\n", "h2"),
+            ("".join(f"{code} — {rules.MITRE_NAMES.get(code, '')}\n"
+                     for code in (row["mitre"] or "").split(", ") if code) or "—\n", None),
             ("Описание\n", "h2"),
             (f"{row['description'] or '—'}\n", None),
             ("Проверки для аналитика\n", "h2"),
@@ -493,6 +516,53 @@ class App(tk.Tk):
     def show_details(self):
         row = self._selected_row()
         self._set_details(self._report_parts(row) if row else [("Выберите инцидент в таблице слева.", "muted")])
+        for btn in self.mark_buttons:
+            btn.configure(state="normal" if row and row["rule"] else "disabled")
+
+    def set_verdict(self, verdict):
+        row = self._selected_row()
+        if not row:
+            return
+        storage.set_verdict(self.db, row["id"], verdict)
+        label = storage.VERDICTS.get(verdict, "отметка снята")
+        self.log("ok", f"#{row['id']} {row['title']}: {label}.")
+        if verdict == "confirmed" and row["rule"] == "new_ip_login":
+            self.log("warning", "Вход с этого IP подтверждён как атака, но программа уже запомнила адрес. "
+                                "Чтобы она снова предупреждала о нём: python main.py --forget-learned "
+                                "<учётная запись>.")
+        self.load_incidents()
+
+    def show_stats(self):
+        """Окно со статистикой правил: какие правила шумят (много ложных)."""
+        win = tk.Toplevel(self)
+        win.title("Статистика правил")
+        win.geometry("1000x380")
+        ttk.Label(win, text="Доля ложных считается среди инцидентов, которые вы уже отметили. "
+                            "Правила с высокой долей стоит настроить.", padding=8).pack(anchor="w")
+        cols = [("title", "Правило", 230), ("mitre", "MITRE", 330), ("total", "Всего", 60),
+                ("confirmed", "Подтв.", 60), ("false_positive", "Ложных", 60),
+                ("unreviewed", "Не разобр.", 75), ("rate", "Доля ложных", 90)]
+        tree = ttk.Treeview(win, columns=[c[0] for c in cols], show="headings")
+        for key, title, width in cols:
+            tree.heading(key, text=title)
+            tree.column(key, width=width, anchor="w" if key in ("title", "mitre") else "center")
+        tree.tag_configure("noisy", background=SEVERITY_STYLE["HIGH"][0])
+        for s in storage.rule_stats(self.db):
+            rate = f"{s['false_rate']:.0%}" if s["false_rate"] is not None else "—"
+            noisy = s["false_rate"] is not None and s["false_rate"] >= 0.5
+            tree.insert("", "end", tags=("noisy",) if noisy else (), values=(
+                s["title"], s["mitre"], s["total"], s["confirmed"], s["false_positive"],
+                s["unreviewed"], rate))
+        tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+    def weekly_report(self):
+        try:
+            path = report.save(self.db, days=7)
+        except OSError as exc:
+            messagebox.showerror("Отчёт", f"Не удалось сохранить отчёт:\n{exc}")
+            return
+        self.log("ok", f"Отчёт за неделю сохранён: {path}")
+        webbrowser.open(path.as_uri())
 
     def copy_report(self):
         row = self._selected_row()
@@ -513,7 +583,7 @@ class App(tk.Tk):
         if not path:
             return
         fields = ["id", "severity", "title", "entity", "first_seen", "last_seen", "event_count",
-                  "description", "checks", "ai_analysis"]
+                  "mitre", "verdict", "description", "checks", "ai_analysis"]
         with open(path, "w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig - чтобы Excel понял русский
             writer = csv.writer(f, delimiter=";")
             writer.writerow(fields)
